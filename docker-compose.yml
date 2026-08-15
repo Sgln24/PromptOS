@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # -------------------------------------
+  # 1. CORE APPLICATION
+  # -------------------------------------
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:             # <-- ADD THIS
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://promptos:secret@postgres:5432/promptos
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8002
+    depends_on:
+      - backend
+
+  # -------------------------------------
+  # 2. INFRASTRUCTURE & STATE
+  # -------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=promptos
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=promptos
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promptos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6335:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+  # -------------------------------------
+  # 3. OBSERVABILITY
+  # -------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317"   # OTLP gRPC
+
+volumes:
+  pg_data:
+  qdrant_data:
+  redis_data:

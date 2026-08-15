@@ -1,0 +1,85 @@
+name: PromptOS Production Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository }}/promptos-backend
+  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}/promptos-frontend
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      # Python Backend Tests
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Backend Deps
+        run: pip install -r backend/requirements.txt
+      - name: Run Pytest & Linter Rules
+        run: |
+          cd backend
+          pytest tests/ -v --cov=app
+          flake8 app/
+
+      # Next.js Frontend Tests
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Frontend Deps
+        run: cd frontend && npm ci
+      - name: Playwright E2E Tests
+        run: cd frontend && npx playwright test
+
+  build-and-push:
+    needs: test-and-lint
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Build and Push Backend
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ env.BACKEND_IMAGE }}:${{ github.sha }},${{ env.BACKEND_IMAGE }}:latest
+
+      - name: Build and Push Frontend
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }},${{ env.FRONTEND_IMAGE }}:latest
+
+  deploy-to-k8s:
+    needs: build-and-push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger GitOps (ArgoCD / Flux)
+        run: |
+          echo "Updating Kubernetes manifests repository with new image tags..."
+          # In an enterprise environment, this step updates the image tag 
+          # in a separate config repository, which ArgoCD automatically syncs.
